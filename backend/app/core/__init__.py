@@ -1,0 +1,1 @@
+"""Módulos transversales del core."""

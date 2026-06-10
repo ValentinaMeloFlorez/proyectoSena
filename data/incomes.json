@@ -1,0 +1,14 @@
+[
+  {
+    "id": "b9bfefa3-b77e-4ff6-87b5-ad4bdda0df62",
+    "createdAt": "2026-06-10T04:36:47.552Z",
+    "updatedAt": "2026-06-10T04:36:47.552Z",
+    "isActive": true,
+    "createdBy": "723fcf94-77d5-4b81-ba9b-fabcd4b6f60a",
+    "updatedBy": "723fcf94-77d5-4b81-ba9b-fabcd4b6f60a",
+    "concept": "kkk",
+    "value": 111111,
+    "date": "2026-06-10",
+    "companyId": "default-company"
+  }
+]
