@@ -1,100 +1,47 @@
+/**
+ * Repositorio de facturas — JSON
+ */
+
 import { Invoice } from "../models/Invoice.js";
-import { query } from "../core/database.js";
+import { JsonRepository } from "./JsonRepository.js";
+
+const repo = new JsonRepository("invoices.json");
 
 export class InvoiceRepository {
   async list(companyId = "default-company", { search, page = 1, limit = 20 } = {}) {
-    let sql = `SELECT * FROM invoices WHERE 1=1`;
-    let values = [];
+    let all = await repo.findAll();
+    all = all.filter((i) => (!i.companyId || i.companyId === companyId) && i.isActive !== false);
 
     if (search) {
-      const searchTerm = `%${search}%`;
-      sql += ` AND (number LIKE ? OR status LIKE ?)`;
-      values.push(searchTerm, searchTerm);
+      const s = search.toLowerCase();
+      all = all.filter(
+        (i) =>
+          i.number?.toLowerCase().includes(s) ||
+          i.status?.toLowerCase().includes(s)
+      );
     }
 
-    const countResult = await query(
-      `SELECT COUNT(*) as count FROM invoices WHERE 1=1 ${
-        search ? `AND (number LIKE ? OR status LIKE ?)` : ""
-      }`,
-      search ? [`%${search}%`, `%${search}%`] : []
-    );
-    const total = countResult[0].count;
+    all.sort((a, b) => new Date(b.date) - new Date(a.date) || new Date(b.createdAt) - new Date(a.createdAt));
 
-    const offset = (page - 1) * limit;
-    sql += ` ORDER BY date DESC, createdAt DESC LIMIT ? OFFSET ?`;
-    values.push(limit, offset);
-
-    const results = await query(sql, values);
-    return {
-      items: results.map((i) => {
-        if (typeof i.items === "string") {
-          i.items = JSON.parse(i.items);
-        }
-        return new Invoice(i);
-      }),
-      total,
-      page,
-      limit,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
-    };
+    const paginated = repo._paginate(all, page, limit);
+    return { ...paginated, items: paginated.items.map((i) => new Invoice(i)) };
   }
 
   async findById(id) {
-    const results = await query(`SELECT * FROM invoices WHERE id = ?`, [id]);
-    if (results.length === 0) return null;
-    const invoice = results[0];
-    if (typeof invoice.items === "string") {
-      invoice.items = JSON.parse(invoice.items);
-    }
-    return new Invoice(invoice);
+    const record = await repo.findById(id);
+    return record ? new Invoice(record) : null;
   }
 
   async create(invoice) {
-    const invoiceData = invoice.toStorage();
-    await query(
-      `INSERT INTO invoices (id, number, clientId, date, dueDate, items, subtotal, tax, total, status, notes, createdBy, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        invoiceData.id,
-        invoiceData.number,
-        invoiceData.clientId,
-        invoiceData.date,
-        invoiceData.dueDate,
-        JSON.stringify(invoiceData.items || []),
-        invoiceData.subtotal,
-        invoiceData.tax,
-        invoiceData.total,
-        invoiceData.status,
-        invoiceData.notes,
-        invoiceData.createdBy,
-        invoiceData.createdAt,
-        invoiceData.updatedAt,
-      ]
-    );
+    const data = invoice.toStorage();
+    await repo.save(data);
     return invoice;
   }
 
   async update(invoice) {
-    const invoiceData = invoice.toStorage();
-    invoiceData.updatedAt = new Date().toISOString();
-
-    await query(
-      `UPDATE invoices SET number = ?, clientId = ?, date = ?, dueDate = ?, items = ?, subtotal = ?, tax = ?, total = ?, status = ?, notes = ?, updatedAt = ? WHERE id = ?`,
-      [
-        invoiceData.number,
-        invoiceData.clientId,
-        invoiceData.date,
-        invoiceData.dueDate,
-        JSON.stringify(invoiceData.items || []),
-        invoiceData.subtotal,
-        invoiceData.tax,
-        invoiceData.total,
-        invoiceData.status,
-        invoiceData.notes,
-        invoiceData.updatedAt,
-        invoiceData.id,
-      ]
-    );
+    const data = invoice.toStorage();
+    data.updatedAt = new Date().toISOString();
+    await repo.save(data);
     return invoice;
   }
 }

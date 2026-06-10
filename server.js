@@ -1,16 +1,14 @@
 /**
  * CONTAIA PRO — Punto de entrada del servidor
- * Responsabilidad: levantar el servidor HTTP
+ * Base de datos: JSON (archivos en /data)
  */
 
 import app from "./app.js";
 import { config } from "./src/config/index.js";
-import { initializeDatabase, closePool } from "./src/core/database.js";
 import { roleRepository } from "./src/repositories/roleRepository.js";
 import { userRepository } from "./src/repositories/userRepository.js";
 
-// Inicializar base de datos
-await initializeDatabase();
+// Seed inicial — crea roles y usuarios si los archivos están vacíos
 await roleRepository.seedSystemRoles();
 await userRepository.seedIfEmpty();
 
@@ -29,8 +27,7 @@ const server = app.listen(config.port, () => {
 // Cierre graceful
 const shutdown = (signal) => {
   console.log(`\n${signal} recibido. Cerrando servidor...`);
-  server.close(async () => {
-    await closePool();
+  server.close(() => {
     console.log("Servidor detenido correctamente.");
     process.exit(0);
   });

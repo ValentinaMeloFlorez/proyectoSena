@@ -1,64 +1,38 @@
+/**
+ * Repositorio de movimientos de inventario — JSON
+ */
+
 import { InventoryMovement } from "../models/InventoryMovement.js";
-import { query } from "../core/database.js";
+import { JsonRepository } from "./JsonRepository.js";
+
+const repo = new JsonRepository("inventory.json");
 
 export class InventoryRepository {
   async list(companyId = "default-company", { productId, type, page = 1, limit = 20 } = {}) {
-    let sql = `SELECT * FROM inventory_movements WHERE 1=1`;
-    let values = [];
+    let all = await repo.findAll();
 
     if (productId) {
-      sql += ` AND productId = ?`;
-      values.push(productId);
+      all = all.filter((i) => i.productId === productId);
     }
 
     if (type) {
-      sql += ` AND type = ?`;
-      values.push(type);
+      all = all.filter((i) => i.type === type);
     }
 
-    const countResult = await query(
-      `SELECT COUNT(*) as count FROM inventory_movements WHERE 1=1 ${
-        productId ? `AND productId = ?` : ""
-      } ${type ? `AND type = ?` : ""}`,
-      values
-    );
-    const total = countResult[0].count;
+    all.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    const offset = (page - 1) * limit;
-    sql += ` ORDER BY createdAt DESC LIMIT ? OFFSET ?`;
-    values.push(limit, offset);
-
-    const results = await query(sql, values);
-    return {
-      items: results.map((i) => new InventoryMovement(i)),
-      total,
-      page,
-      limit,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
-    };
+    const paginated = repo._paginate(all, page, limit);
+    return { ...paginated, items: paginated.items.map((i) => new InventoryMovement(i)) };
   }
 
   async findById(id) {
-    const results = await query(`SELECT * FROM inventory_movements WHERE id = ?`, [id]);
-    return results.length > 0 ? new InventoryMovement(results[0]) : null;
+    const record = await repo.findById(id);
+    return record ? new InventoryMovement(record) : null;
   }
 
   async create(movement) {
-    const movementData = movement.toStorage();
-    await query(
-      `INSERT INTO inventory_movements (id, productId, type, quantity, reason, reference, createdBy, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        movementData.id,
-        movementData.productId,
-        movementData.type,
-        movementData.quantity,
-        movementData.reason,
-        movementData.reference,
-        movementData.createdBy,
-        movementData.createdAt,
-      ]
-    );
+    const data = movement.toStorage();
+    await repo.save(data);
     return movement;
   }
 }

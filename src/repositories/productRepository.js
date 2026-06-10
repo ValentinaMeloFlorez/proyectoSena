@@ -1,138 +1,88 @@
+/**
+ * Repositorio de productos — JSON
+ */
+
 import { Product } from "../models/Product.js";
-import { query } from "../core/database.js";
+import { JsonRepository } from "./JsonRepository.js";
+
+const repo = new JsonRepository("products.json");
 
 export class ProductRepository {
   async list(companyId = "default-company", { search, page = 1, limit = 20 } = {}) {
-    let sql = `SELECT * FROM products WHERE isActive = true`;
-    let values = [];
+    let all = await repo.findAll();
+    all = all.filter((p) => (!p.companyId || p.companyId === companyId) && p.isActive !== false);
 
     if (search) {
-      const searchTerm = `%${search}%`;
-      sql += ` AND (name LIKE ? OR sku LIKE ? OR category LIKE ?)`;
-      values.push(searchTerm, searchTerm, searchTerm);
+      const s = search.toLowerCase();
+      all = all.filter(
+        (p) =>
+          p.name?.toLowerCase().includes(s) ||
+          p.code?.toLowerCase().includes(s) ||
+          p.category?.toLowerCase().includes(s)
+      );
     }
 
-    const countResult = await query(
-      `SELECT COUNT(*) as count FROM products WHERE isActive = true ${
-        search ? `AND (name LIKE ? OR sku LIKE ? OR category LIKE ?)` : ""
-      }`,
-      search ? [`%${search}%`, `%${search}%`, `%${search}%`] : []
-    );
-    const total = countResult[0].count;
+    all.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    const offset = (page - 1) * limit;
-    sql += ` ORDER BY createdAt DESC LIMIT ? OFFSET ?`;
-    values.push(limit, offset);
-
-    const results = await query(sql, values);
-    return {
-      items: results.map((p) => new Product(p)),
-      total,
-      page,
-      limit,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
-    };
+    const paginated = repo._paginate(all, page, limit);
+    return { ...paginated, items: paginated.items.map((p) => new Product(p)) };
   }
 
   async findById(id, includeInactive = false) {
-    const sql = includeInactive
-      ? `SELECT * FROM products WHERE id = ?`
-      : `SELECT * FROM products WHERE id = ? AND isActive = true`;
-
-    const results = await query(sql, [id]);
-    return results.length > 0 ? new Product(results[0]) : null;
+    const record = await repo.findById(id);
+    if (!record) return null;
+    if (!includeInactive && record.isActive === false) return null;
+    return new Product(record);
   }
 
   async findBySku(sku, companyId = "default-company", excludeId = null) {
-    let sql = `SELECT * FROM products WHERE LOWER(sku) = LOWER(?) AND isActive = true`;
-    let values = [sku];
-
-    if (excludeId) {
-      sql += ` AND id != ?`;
-      values.push(excludeId);
-    }
-
-    const results = await query(sql, values);
-    return results.length > 0 ? new Product(results[0]) : null;
+    const record = await repo.findOne(
+      (p) =>
+        p.code?.toLowerCase() === sku.toLowerCase() &&
+        p.isActive !== false &&
+        (excludeId ? p.id !== excludeId : true)
+    );
+    return record ? new Product(record) : null;
   }
 
   async findByName(name, companyId = "default-company", excludeId = null) {
-    let sql = `SELECT * FROM products WHERE LOWER(name) = LOWER(?) AND isActive = true`;
-    let values = [name];
-
-    if (excludeId) {
-      sql += ` AND id != ?`;
-      values.push(excludeId);
-    }
-
-    const results = await query(sql, values);
-    return results.length > 0 ? new Product(results[0]) : null;
+    const record = await repo.findOne(
+      (p) =>
+        p.name?.toLowerCase() === name.toLowerCase() &&
+        p.isActive !== false &&
+        (excludeId ? p.id !== excludeId : true)
+    );
+    return record ? new Product(record) : null;
   }
 
   async create(product) {
-    const productData = product.toStorage();
-    await query(
-      `INSERT INTO products (id, name, description, price, cost, sku, category, quantity, unit, isActive, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        productData.id,
-        productData.name,
-        productData.description,
-        productData.price,
-        productData.cost,
-        productData.sku,
-        productData.category,
-        productData.quantity || 0,
-        productData.unit,
-        productData.isActive,
-        productData.createdAt,
-        productData.updatedAt,
-      ]
-    );
+    const data = product.toStorage();
+    await repo.save(data);
     return product;
   }
 
   async update(product) {
-    const productData = product.toStorage();
-    productData.updatedAt = new Date().toISOString();
-
-    await query(
-      `UPDATE products SET name = ?, description = ?, price = ?, cost = ?, sku = ?, category = ?, quantity = ?, unit = ?, isActive = ?, updatedAt = ? WHERE id = ?`,
-      [
-        productData.name,
-        productData.description,
-        productData.price,
-        productData.cost,
-        productData.sku,
-        productData.category,
-        productData.quantity || 0,
-        productData.unit,
-        productData.isActive,
-        productData.updatedAt,
-        productData.id,
-      ]
-    );
+    const data = product.toStorage();
+    data.updatedAt = new Date().toISOString();
+    await repo.save(data);
     return product;
   }
 
   async remove(id, companyId = "default-company") {
-    const result = await query(
-      `UPDATE products SET isActive = false, updatedAt = ? WHERE id = ?`,
-      [new Date().toISOString(), id]
-    );
-    if (result.affectedRows === 0) return null;
-    return this.findById(id, true);
+    const record = await repo.findById(id);
+    if (!record) return null;
+    record.isActive = false;
+    record.updatedAt = new Date().toISOString();
+    await repo.save(record);
+    return new Product(record);
   }
 
   async updateStock(id, delta, companyId = "default-company") {
     const product = await this.findById(id);
     if (!product) return null;
-    product.quantity = Math.max(0, (product.quantity || 0) + delta);
+    product.stock = Math.max(0, (product.stock || 0) + delta);
     return this.update(product);
   }
-}
-
-export const productRepository = new ProductRepository();
 }
 
 export const productRepository = new ProductRepository();

@@ -1,94 +1,56 @@
+/**
+ * Repositorio de ingresos — JSON
+ */
+
 import { Income } from "../models/Income.js";
-import { query } from "../core/database.js";
+import { JsonRepository } from "./JsonRepository.js";
+
+const repo = new JsonRepository("incomes.json");
 
 export class IncomeRepository {
   async list(companyId = "default-company", { search, page = 1, limit = 20 } = {}) {
-    let sql = `SELECT * FROM incomes WHERE 1=1`;
-    let values = [];
+    let all = await repo.findAll();
+    all = all.filter((i) => (!i.companyId || i.companyId === companyId) && i.isActive !== false);
 
     if (search) {
-      const searchTerm = `%${search}%`;
-      sql += ` AND (description LIKE ? OR category LIKE ?)`;
-      values.push(searchTerm, searchTerm);
+      const s = search.toLowerCase();
+      all = all.filter(
+        (i) =>
+          i.concept?.toLowerCase().includes(s) ||
+          String(i.value).includes(s)
+      );
     }
 
-    const countResult = await query(
-      `SELECT COUNT(*) as count FROM incomes WHERE 1=1 ${
-        search ? `AND (description LIKE ? OR category LIKE ?)` : ""
-      }`,
-      search ? [`%${search}%`, `%${search}%`] : []
-    );
-    const total = countResult[0].count;
+    all.sort((a, b) => new Date(b.date) - new Date(a.date) || new Date(b.createdAt) - new Date(a.createdAt));
 
-    const offset = (page - 1) * limit;
-    sql += ` ORDER BY date DESC, createdAt DESC LIMIT ? OFFSET ?`;
-    values.push(limit, offset);
-
-    const results = await query(sql, values);
-    return {
-      items: results.map((i) => new Income(i)),
-      total,
-      page,
-      limit,
-      totalPages: Math.max(1, Math.ceil(total / limit)),
-    };
+    const paginated = repo._paginate(all, page, limit);
+    return { ...paginated, items: paginated.items.map((i) => new Income(i)) };
   }
 
   async findById(id) {
-    const results = await query(`SELECT * FROM incomes WHERE id = ?`, [id]);
-    return results.length > 0 ? new Income(results[0]) : null;
+    const record = await repo.findById(id);
+    return record ? new Income(record) : null;
   }
 
   async create(income) {
-    const incomeData = income.toStorage();
-    await query(
-      `INSERT INTO incomes (id, description, amount, date, category, source, reference, notes, createdBy, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        incomeData.id,
-        incomeData.description,
-        incomeData.amount,
-        incomeData.date,
-        incomeData.category,
-        incomeData.source,
-        incomeData.reference,
-        incomeData.notes,
-        incomeData.createdBy,
-        incomeData.createdAt,
-        incomeData.updatedAt,
-      ]
-    );
+    const data = income.toStorage();
+    await repo.save(data);
     return income;
   }
 
   async update(income) {
-    const incomeData = income.toStorage();
-    incomeData.updatedAt = new Date().toISOString();
-
-    await query(
-      `UPDATE incomes SET description = ?, amount = ?, date = ?, category = ?, source = ?, reference = ?, notes = ?, updatedAt = ? WHERE id = ?`,
-      [
-        incomeData.description,
-        incomeData.amount,
-        incomeData.date,
-        incomeData.category,
-        incomeData.source,
-        incomeData.reference,
-        incomeData.notes,
-        incomeData.updatedAt,
-        incomeData.id,
-      ]
-    );
+    const data = income.toStorage();
+    data.updatedAt = new Date().toISOString();
+    await repo.save(data);
     return income;
   }
 
   async remove(id, companyId = "default-company") {
-    const result = await query(
-      `DELETE FROM incomes WHERE id = ?`,
-      [id]
-    );
-    if (result.affectedRows === 0) return null;
-    return this.findById(id);
+    const record = await repo.findById(id);
+    if (!record) return null;
+    const income = new Income(record);
+    await repo.deleteById(id);
+    return income;
   }
 }
 

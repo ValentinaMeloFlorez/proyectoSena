@@ -1,17 +1,20 @@
 /**
- * Repositorio de usuarios — MySQL
+ * Repositorio de usuarios — JSON
  */
 
 import { User } from "../models/User.js";
 import { ROLES } from "../config/roles.js";
 import { hashPassword } from "../utils/password.js";
-import { query } from "../core/database.js";
+import { JsonRepository } from "./JsonRepository.js";
 import { roleRepository } from "./roleRepository.js";
+
+const repo = new JsonRepository("users.json");
+const blacklistRepo = new JsonRepository("token-blacklist.json");
 
 class UserRepository {
   async seedIfEmpty() {
-    const count = await query("SELECT COUNT(*) as count FROM users");
-    if (count[0].count > 0) return;
+    const all = await repo.findAll();
+    if (all.length > 0) return;
 
     const seeds = [
       { email: "admin@contaia.com", password: "Admin123!", firstName: "Administrador", lastName: "Sistema", document: "1000000001", role: ROLES.ADMINISTRADOR },
@@ -22,150 +25,106 @@ class UserRepository {
 
     for (const s of seeds) {
       const roleRecord = await roleRepository.findByName(s.role);
-      const userId = crypto.randomUUID();
-
-      await query(
-        `INSERT INTO users (id, email, passwordHash, firstName, lastName, document, role, roleId, companyId, isActive, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          userId,
-          s.email,
-          await hashPassword(s.password),
-          s.firstName,
-          s.lastName,
-          s.document,
-          s.role,
-          roleRecord?.id || null,
-          "default-company",
-          true,
-          new Date().toISOString(),
-          new Date().toISOString(),
-        ]
-      );
+      const user = new User({
+        id: crypto.randomUUID(),
+        email: s.email,
+        passwordHash: await hashPassword(s.password),
+        firstName: s.firstName,
+        lastName: s.lastName,
+        document: s.document,
+        role: s.role,
+        roleId: roleRecord?.id || null,
+        companyId: "default-company",
+        isActive: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastLoginAt: null,
+      });
+      await repo.save(user.toStorage());
     }
 
     console.log("✔ Usuarios de prueba creados");
   }
 
   async list(companyId = "default-company", { search, page = 1, limit = 20 } = {}) {
-    let sql = `SELECT * FROM users WHERE companyId = ? AND isActive = true`;
-    let values = [companyId];
+    let all = await repo.findAll();
+    all = all.filter((u) => u.companyId === companyId && u.isActive !== false);
 
     if (search) {
-      const searchTerm = `%${search}%`;
-      sql += ` AND (email LIKE ? OR firstName LIKE ? OR lastName LIKE ? OR document LIKE ?)`;
-      values.push(searchTerm, searchTerm, searchTerm, searchTerm);
+      const s = search.toLowerCase();
+      all = all.filter(
+        (u) =>
+          u.email?.toLowerCase().includes(s) ||
+          u.firstName?.toLowerCase().includes(s) ||
+          u.lastName?.toLowerCase().includes(s) ||
+          u.document?.toLowerCase().includes(s)
+      );
     }
 
-    const countResult = await query(
-      `SELECT COUNT(*) as count FROM users WHERE companyId = ? AND isActive = true ${
-        search ? `AND (email LIKE ? OR firstName LIKE ? OR lastName LIKE ? OR document LIKE ?)` : ""
-      }`,
-      values
-    );
-    const total = countResult[0].count;
+    // Ordenar por createdAt desc
+    all.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    const offset = (page - 1) * limit;
-    sql += ` ORDER BY createdAt DESC LIMIT ? OFFSET ?`;
-    values.push(limit, offset);
+    const total = all.length;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const start = (page - 1) * limit;
+    const items = all.slice(start, start + limit).map((u) => new User(u));
 
-    const results = await query(sql, values);
-    const items = results.map((u) => new User(u));
-
-    return { items, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
+    return { items, total, page, limit, totalPages };
   }
 
   async countByRole(roleName, companyId = "default-company") {
-    const result = await query(
-      `SELECT COUNT(*) as count FROM users WHERE role = ? AND companyId = ? AND isActive = true`,
-      [roleName, companyId]
-    );
-    return result[0].count;
+    const all = await repo.findAll();
+    return all.filter(
+      (u) => u.role === roleName && u.companyId === companyId && u.isActive !== false
+    ).length;
   }
 
   async findByEmail(email, activeOnly = true) {
-    const sql = activeOnly
-      ? `SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND isActive = true`
-      : `SELECT * FROM users WHERE LOWER(email) = LOWER(?)`;
-
-    const results = await query(sql, [email]);
-    return results.length > 0 ? new User(results[0]) : null;
+    const record = await repo.findOne((u) => {
+      const matches = u.email?.toLowerCase() === email.toLowerCase();
+      return activeOnly ? matches && u.isActive !== false : matches;
+    });
+    return record ? new User(record) : null;
   }
 
   async findByDocument(document, companyId = "default-company", excludeId = null) {
-    let sql = `SELECT * FROM users WHERE document = ? AND companyId = ? AND isActive = true`;
-    let values = [document, companyId];
-
-    if (excludeId) {
-      sql += ` AND id != ?`;
-      values.push(excludeId);
-    }
-
-    const results = await query(sql, values);
-    return results.length > 0 ? new User(results[0]) : null;
+    const record = await repo.findOne(
+      (u) =>
+        u.document === document &&
+        u.companyId === companyId &&
+        u.isActive !== false &&
+        (excludeId ? u.id !== excludeId : true)
+    );
+    return record ? new User(record) : null;
   }
 
   async findById(id, includeInactive = false) {
-    const sql = includeInactive
-      ? `SELECT * FROM users WHERE id = ?`
-      : `SELECT * FROM users WHERE id = ? AND isActive = true`;
-
-    const results = await query(sql, [id]);
-    return results.length > 0 ? new User(results[0]) : null;
+    const record = await repo.findById(id);
+    if (!record) return null;
+    if (!includeInactive && record.isActive === false) return null;
+    return new User(record);
   }
 
   async create(user) {
-    const userData = user.toStorage();
-    await query(
-      `INSERT INTO users (id, email, passwordHash, firstName, lastName, document, role, roleId, companyId, isActive, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        userData.id,
-        userData.email,
-        userData.passwordHash,
-        userData.firstName,
-        userData.lastName,
-        userData.document,
-        userData.role,
-        userData.roleId,
-        userData.companyId,
-        userData.isActive,
-        userData.createdAt,
-        userData.updatedAt,
-      ]
-    );
+    const data = user.toStorage();
+    await repo.save(data);
     return user;
   }
 
   async update(user) {
-    const userData = user.toStorage();
-    userData.updatedAt = new Date().toISOString();
-
-    await query(
-      `UPDATE users SET email = ?, firstName = ?, lastName = ?, document = ?, role = ?, roleId = ?, companyId = ?, isActive = ?, updatedAt = ? WHERE id = ?`,
-      [
-        userData.email,
-        userData.firstName,
-        userData.lastName,
-        userData.document,
-        userData.role,
-        userData.roleId,
-        userData.companyId,
-        userData.isActive,
-        userData.updatedAt,
-        userData.id,
-      ]
-    );
+    const data = user.toStorage();
+    data.updatedAt = new Date().toISOString();
+    await repo.save(data);
     return user;
   }
 
   async softDelete(id, companyId = "default-company") {
-    const result = await query(
-      `UPDATE users SET isActive = false, updatedAt = ? WHERE id = ? AND companyId = ?`,
-      [new Date().toISOString(), id, companyId]
-    );
-    if (result.affectedRows === 0) return null;
-    return this.findById(id, true);
+    const record = await repo.findById(id);
+    if (!record || record.companyId !== companyId) return null;
+    record.isActive = false;
+    record.updatedAt = new Date().toISOString();
+    await repo.save(record);
+    return new User(record);
   }
 
   async updatePassword(userId, passwordHash) {
@@ -175,21 +134,23 @@ class UserRepository {
     return this.update(user);
   }
 
+  // ─── Token blacklist ───────────────────────────────────────────────────────
+
   async addToBlacklist(token, expiresAt) {
-    await query(
-      `INSERT INTO token_blacklist (token, expiresAt) VALUES (?, ?)`,
-      [token, expiresAt]
-    );
+    const all = await blacklistRepo.findAll();
     // Limpiar tokens expirados
-    await query(`DELETE FROM token_blacklist WHERE expiresAt < NOW()`);
+    const now = new Date();
+    const active = all.filter((t) => new Date(t.expiresAt) > now);
+    active.push({ token, expiresAt });
+    await blacklistRepo._writeFile(active);
   }
 
   async isBlacklisted(token) {
-    const results = await query(
-      `SELECT id FROM token_blacklist WHERE token = ? AND expiresAt > NOW()`,
-      [token]
+    const all = await blacklistRepo.findAll();
+    const now = new Date();
+    return all.some(
+      (t) => t.token === token && new Date(t.expiresAt) > now
     );
-    return results.length > 0;
   }
 }
 

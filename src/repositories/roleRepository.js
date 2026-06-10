@@ -1,136 +1,99 @@
 /**
- * Repositorio de roles — MySQL
+ * Repositorio de roles — JSON
  */
 
 import { Role } from "../models/Role.js";
 import { ROLE_PERMISSIONS, ROLES } from "../config/roles.js";
-import { query } from "../core/database.js";
+import { JsonRepository } from "./JsonRepository.js";
+
+const repo = new JsonRepository("roles.json");
 
 class RoleRepository {
   async seedSystemRoles() {
-    const result = await query(`SELECT COUNT(*) as count FROM roles`);
-    if (result[0].count > 0) {
-      // Sincronizar permisos de roles existentes
+    const all = await repo.findAll();
+    if (all.length > 0) {
+      // Sincronizar permisos de roles del sistema si ya existen
       for (const [name, permissions] of Object.entries(ROLE_PERMISSIONS)) {
-        await query(
-          `UPDATE roles SET permissions = ? WHERE name = ? AND name IN (?, ?, ?, ?)`,
-          [JSON.stringify(permissions), name, ROLES.ADMINISTRADOR, ROLES.CONTADOR, ROLES.EMPLEADO, ROLES.GERENTE]
+        const existing = all.find(
+          (r) => r.name.toLowerCase() === name.toLowerCase()
         );
+        if (existing) {
+          existing.permissions = permissions;
+          existing.updatedAt = new Date().toISOString();
+          await repo.save(existing);
+        }
       }
       return;
     }
 
+    // Crear roles del sistema por primera vez
     for (const [name, permissions] of Object.entries(ROLE_PERMISSIONS)) {
-      const roleId = crypto.randomUUID();
-      await query(
-        `INSERT INTO roles (id, name, description, permissions, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          roleId,
-          name,
-          `Rol del sistema: ${name}`,
-          JSON.stringify(permissions),
-          new Date().toISOString(),
-          new Date().toISOString(),
-        ]
-      );
+      const role = new Role({
+        id: crypto.randomUUID(),
+        name,
+        description: `Rol del sistema: ${name}`,
+        permissions,
+        isSystem: true,
+        companyId: "default-company",
+        isActive: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        createdBy: "system",
+      });
+      await repo.save(role.toStorage());
     }
 
     console.log("✔ Roles del sistema creados");
   }
 
   async findAll(companyId = "default-company") {
-    const results = await query(
-      `SELECT * FROM roles WHERE isActive = true ORDER BY name`
-    );
-    return results.map((r) => {
-      if (typeof r.permissions === "string") {
-        r.permissions = JSON.parse(r.permissions);
-      }
-      return new Role(r);
-    });
+    const all = await repo.findAll();
+    return all
+      .filter((r) => r.isActive !== false)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((r) => new Role(r));
   }
 
   async findById(id, companyId = "default-company") {
-    const results = await query(
-      `SELECT * FROM roles WHERE id = ? AND isActive = true`,
-      [id]
-    );
-    if (results.length === 0) return null;
-    const role = results[0];
-    if (typeof role.permissions === "string") {
-      role.permissions = JSON.parse(role.permissions);
-    }
-    return new Role(role);
+    const record = await repo.findById(id);
+    if (!record || record.isActive === false) return null;
+    return new Role(record);
   }
 
   async findByName(name, companyId = "default-company") {
-    const results = await query(
-      `SELECT * FROM roles WHERE LOWER(name) = LOWER(?) AND isActive = true`,
-      [name]
+    const record = await repo.findOne(
+      (r) => r.name.toLowerCase() === name.toLowerCase() && r.isActive !== false
     );
-    if (results.length === 0) return null;
-    const role = results[0];
-    if (typeof role.permissions === "string") {
-      role.permissions = JSON.parse(role.permissions);
-    }
-    return new Role(role);
+    return record ? new Role(record) : null;
   }
 
   async findByNameIncludingInactive(name, companyId = "default-company") {
-    const results = await query(
-      `SELECT * FROM roles WHERE LOWER(name) = LOWER(?)`,
-      [name]
+    const record = await repo.findOne(
+      (r) => r.name.toLowerCase() === name.toLowerCase()
     );
-    if (results.length === 0) return null;
-    const role = results[0];
-    if (typeof role.permissions === "string") {
-      role.permissions = JSON.parse(role.permissions);
-    }
-    return new Role(role);
+    return record ? new Role(record) : null;
   }
 
   async create(role) {
-    const roleData = role.toStorage();
-    await query(
-      `INSERT INTO roles (id, name, description, permissions, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        roleData.id,
-        roleData.name,
-        roleData.description,
-        JSON.stringify(roleData.permissions),
-        roleData.createdAt,
-        roleData.updatedAt,
-      ]
-    );
+    const data = role.toStorage();
+    await repo.save(data);
     return role;
   }
 
   async update(role) {
-    const roleData = role.toStorage();
-    roleData.updatedAt = new Date().toISOString();
-
-    await query(
-      `UPDATE roles SET name = ?, description = ?, permissions = ?, updatedAt = ? WHERE id = ?`,
-      [
-        roleData.name,
-        roleData.description,
-        JSON.stringify(roleData.permissions),
-        roleData.updatedAt,
-        roleData.id,
-      ]
-    );
+    const data = role.toStorage();
+    data.updatedAt = new Date().toISOString();
+    await repo.save(data);
     return role;
   }
 
   async softDelete(id, companyId = "default-company") {
-    const result = await query(
-      `UPDATE roles SET isActive = false, updatedAt = ? WHERE id = ?`,
-      [new Date().toISOString(), id]
-    );
-    if (result.affectedRows === 0) return null;
-    return this.findById(id, companyId);
+    const record = await repo.findById(id);
+    if (!record) return null;
+    record.isActive = false;
+    record.updatedAt = new Date().toISOString();
+    await repo.save(record);
+    return new Role(record);
   }
 
   async getPermissionsForRoleName(roleName, companyId = "default-company") {
